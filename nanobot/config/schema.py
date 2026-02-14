@@ -1,6 +1,7 @@
 """Configuration schema using Pydantic."""
 
 from pathlib import Path
+from typing import Any
 from pydantic import BaseModel, Field, ConfigDict
 from pydantic_settings import BaseSettings
 
@@ -140,6 +141,10 @@ class QQConfig(BaseModel):
     app_id: str = ""  # 机器人 ID (AppID) from q.qq.com
     secret: str = ""  # 机器人密钥 (AppSecret) from q.qq.com
     allow_from: list[str] = Field(default_factory=list)  # Allowed user openids (empty = public access)
+    cos_bucket: str = ""  # e.g. example-1250000000
+    cos_region: str = ""  # e.g. ap-guangzhou
+    cos_prefix: str = "nanobot/qq"
+    cos_url_expire_seconds: int = 1800
 
 
 class ChannelsConfig(BaseModel):

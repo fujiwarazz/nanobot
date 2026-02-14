@@ -3,13 +3,12 @@
 from __future__ import annotations
 
 import json
-from typing import Any
 
-from nanobot.agent.tools.base import BaseTool
+from nanobot.agent.tools.base import Tool
 from nanobot.memory import MemoryIndexManager
 
 
-class MemorySearchTool(BaseTool):
+class MemorySearchTool(Tool):
     name = "memory_search"
     description = "Search indexed memory (MEMORY.md, daily notes, sessions) and return relevant snippets."
     parameters = {
@@ -29,7 +28,7 @@ class MemorySearchTool(BaseTool):
         return json.dumps(results, ensure_ascii=False)
 
 
-class MemoryGetTool(BaseTool):
+class MemoryGetTool(Tool):
     name = "memory_get"
     description = "Fetch a memory chunk by id."
     parameters = {

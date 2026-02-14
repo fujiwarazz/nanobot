@@ -2,10 +2,16 @@
 
 import asyncio
 import os
+import re
+import shutil
 import signal
+import subprocess
+import tempfile
 from pathlib import Path
 import select
 import sys
+import urllib.parse
+import urllib.request
 
 import typer
 from rich.console import Console
@@ -25,6 +31,10 @@ app = typer.Typer(
     help=f"{__logo__} nanobot - Personal AI Assistant",
     no_args_is_help=True,
 )
+skill_app = typer.Typer(help="Manage skills.")
+memory_app = typer.Typer(help="Manage memory data.")
+app.add_typer(skill_app, name="skill")
+app.add_typer(memory_app, name="memory")
 
 console = Console()
 EXIT_COMMANDS = {"exit", "quit", "/exit", "/quit", ":q"}
@@ -111,6 +121,92 @@ def _is_exit_command(command: str) -> bool:
     return command.lower() in EXIT_COMMANDS
 
 
+def _resolve_repo_url(repo: str) -> str:
+    """Resolve user input to a cloneable repo URL."""
+    repo = repo.strip()
+    if repo.startswith(("http://", "https://", "git@")):
+        return repo
+    if "/" in repo:
+        return f"https://github.com/{repo}.git"
+    raise ValueError(f"Unrecognized repo: {repo}")
+
+
+def _is_github_url(url: str) -> bool:
+    return "github.com" in url
+
+
+def _download_github_zip(url: str, ref: str | None, dest: Path) -> Path:
+    """Download GitHub repo zip and extract to dest. Returns extracted root path."""
+    # Normalize URL to https://github.com/owner/repo(.git)
+    if url.startswith("git@"):
+        # git@github.com:owner/repo(.git)
+        parts = url.split(":", 1)[-1]
+        url = f"https://github.com/{parts}"
+    if url.endswith(".git"):
+        url = url[:-4]
+    owner_repo = "/".join(url.rstrip("/").split("/")[-2:])
+    ref = ref or "main"
+    zip_url = f"https://github.com/{owner_repo}/archive/refs/heads/{ref}.zip"
+
+    zip_path = dest / "repo.zip"
+    with urllib.request.urlopen(zip_url) as resp, open(zip_path, "wb") as f:
+        f.write(resp.read())
+
+    shutil.unpack_archive(str(zip_path), str(dest))
+    # Extracted folder usually repo-ref
+    for child in dest.iterdir():
+        if child.is_dir():
+            return child
+    raise RuntimeError("Failed to extract repo zip")
+
+
+def _find_skill_dir(root: Path, skill: str) -> Path | None:
+    # Prefer skills/<skill>/SKILL.md
+    candidate = root / "skills" / skill / "SKILL.md"
+    if candidate.exists():
+        return candidate.parent
+    # Also accept <skill>/SKILL.md at repo root
+    candidate = root / skill / "SKILL.md"
+    if candidate.exists():
+        return candidate.parent
+    # Fallback: search by SKILL.md and match dirname
+    for p in root.rglob("SKILL.md"):
+        if p.parent.name == skill:
+            return p.parent
+    return None
+
+
+def _install_skill_from_repo(repo: str, skill: str, ref: str | None, dest: Path, force: bool) -> Path:
+    repo_url = _resolve_repo_url(repo)
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        repo_root: Path | None = None
+        git_bin = shutil.which("git")
+        if git_bin:
+            cmd = [git_bin, "clone", "--depth", "1"]
+            if ref:
+                cmd += ["--branch", ref]
+            cmd += [repo_url, str(tmp_path / "repo")]
+            subprocess.run(cmd, check=True)
+            repo_root = tmp_path / "repo"
+        elif _is_github_url(repo_url):
+            repo_root = _download_github_zip(repo_url, ref, tmp_path)
+        else:
+            raise RuntimeError("git not found and repo is not GitHub URL")
+
+        skill_dir = _find_skill_dir(repo_root, skill)
+        if not skill_dir:
+            raise RuntimeError(f"Skill '{skill}' not found in repo {repo}")
+
+        dest_skill = dest / skill
+        if dest_skill.exists():
+            if not force:
+                raise RuntimeError(f"Skill already exists: {dest_skill}")
+            shutil.rmtree(dest_skill)
+        shutil.copytree(skill_dir, dest_skill)
+        return dest_skill
+
+
 async def _read_interactive_input_async() -> str:
     """Read user input using prompt_toolkit (handles paste, history, display).
 
@@ -145,6 +241,104 @@ def main(
 ):
     """nanobot - Personal AI Assistant."""
     pass
+
+
+# ============================================================================
+# Skills Install (CLI)
+# ============================================================================
+
+
+@app.command()
+def add(
+    repo: str = typer.Argument(..., help="GitHub repo URL or owner/repo"),
+    skill: str = typer.Option(..., "--skill", "-s", help="Skill name (folder containing SKILL.md)"),
+    ref: str | None = typer.Option(None, "--ref", "-r", help="Git ref (branch/tag)"),
+    force: bool = typer.Option(False, "--force", "-f", help="Overwrite existing skill"),
+):
+    """Install a skill from a GitHub repo into your workspace skills directory."""
+    from nanobot.config.loader import load_config
+
+    config = load_config()
+    skills_dir = config.workspace_path / "skills"
+    skills_dir.mkdir(parents=True, exist_ok=True)
+
+    try:
+        dest = _install_skill_from_repo(repo, skill, ref, skills_dir, force=force)
+        console.print(f"[green]✓[/green] Installed skill '{skill}' to {dest}")
+    except Exception as exc:
+        console.print(f"[red]Failed to install skill:[/red] {exc}")
+        raise typer.Exit(1)
+
+
+@skill_app.command("list")
+def skill_list():
+    """List workspace and builtin skills with availability."""
+    from nanobot.config.loader import load_config
+    from nanobot.agent.skills import SkillsLoader
+
+    config = load_config()
+    loader = SkillsLoader(config.workspace_path)
+    all_skills = loader.list_skills(filter_unavailable=False)
+    available_names = {s["name"] for s in loader.list_skills(filter_unavailable=True)}
+
+    table = Table(title="Skills")
+    table.add_column("Name")
+    table.add_column("Source")
+    table.add_column("Available")
+    table.add_column("Path")
+
+    for skill in all_skills:
+        name = skill["name"]
+        table.add_row(
+            name,
+            skill["source"],
+            "yes" if name in available_names else "no",
+            skill["path"],
+        )
+
+    console.print(table)
+
+
+@memory_app.command("clear")
+def memory_clear(
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation"),
+):
+    """Clear long-term and short-term memory data."""
+    from nanobot.config.loader import load_config
+
+    config = load_config()
+    workspace = config.workspace_path
+    memory_dir = workspace / "memory"
+    sessions_dir = Path.home() / ".nanobot" / "sessions"
+    index_dir = Path.home() / ".nanobot" / "memory"
+
+    if not yes:
+        console.print("[yellow]This will delete MEMORY.md, daily memory files, HISTORY.md, sessions, and memory index.[/yellow]")
+        if not typer.confirm("Continue?"):
+            console.print("Cancelled.")
+            raise typer.Exit(0)
+
+    removed: list[str] = []
+
+    if memory_dir.exists():
+        for p in memory_dir.glob("*.md"):
+            p.unlink(missing_ok=True)
+            removed.append(str(p))
+
+    if sessions_dir.exists():
+        for p in sessions_dir.glob("*.jsonl"):
+            p.unlink(missing_ok=True)
+            removed.append(str(p))
+
+    if index_dir.exists():
+        for p in index_dir.glob("*.sqlite*"):
+            p.unlink(missing_ok=True)
+            removed.append(str(p))
+
+    console.print(f"[green]✓[/green] Cleared {len(removed)} memory artifacts")
+    if removed:
+        for path in removed:
+            console.print(f"  - {path}")
 
 
 # ============================================================================

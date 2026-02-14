@@ -4,33 +4,33 @@ Information about the user to help personalize interactions.
 
 ## Basic Information
 
-- **Name**: (your name)
-- **Timezone**: (your timezone, e.g., UTC+8)
-- **Language**: (preferred language)
+- **Name**: peelsannaw
+- **Timezone**: UTC+8
+- **Language**: Chinese
 
 ## Preferences
 
 ### Communication Style
 
 - [ ] Casual
-- [ ] Professional
+- [✅] Professional
 - [ ] Technical
 
 ### Response Length
 
 - [ ] Brief and concise
 - [ ] Detailed explanations
-- [ ] Adaptive based on question
+- [✅] Adaptive based on question
 
 ### Technical Level
 
 - [ ] Beginner
 - [ ] Intermediate
-- [ ] Expert
+- [✅] Expert
 
 ## Work Context
 
-- **Primary Role**: (your role, e.g., developer, researcher)
+- **Primary Role**: An Artificial Intelligence Major Degree Student In UCAS(University of Chinese Academic of Science)
 - **Main Projects**: (what you're working on)
 - **Tools You Use**: (IDEs, languages, frameworks)
 

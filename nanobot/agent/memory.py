@@ -34,7 +34,7 @@ class MemoryStore:
 
     def _daily_file(self, date: datetime | None = None) -> Path:
         dt = date or datetime.now()
-        return self.daily_dir / f\"{dt.strftime('%Y-%m-%d')}.md\"
+        return self.daily_dir / f"{dt.strftime('%Y-%m-%d')}.md"
 
     def get_memory_context(self) -> str:
         long_term = self.read_long_term()
