@@ -159,15 +159,40 @@ class AgentDefaults(BaseModel):
     """Default agent configuration."""
     workspace: str = "~/.nanobot/workspace"
     model: str = "anthropic/claude-opus-4-5"
+    context_tokens: int = 128000
     max_tokens: int = 8192
     temperature: float = 0.7
     max_tool_iterations: int = 20
     memory_window: int = 50
+    compaction: "AgentCompactionConfig" = Field(default_factory=lambda: AgentCompactionConfig())
 
 
 class AgentsConfig(BaseModel):
     """Agent configuration."""
     defaults: AgentDefaults = Field(default_factory=AgentDefaults)
+
+
+class AgentCompactionMemoryFlushConfig(BaseModel):
+    """Pre-compaction memory flush settings."""
+    enabled: bool = True
+    soft_threshold_tokens: int = 8000
+    prompt: str = (
+        "Write concise memory notes. Store durable user preferences/identity in MEMORY.md. "
+        "Store today's important events in memory/YYYY-MM-DD.md. If nothing important, write nothing."
+    )
+    system_prompt: str = (
+        "You are running a memory flush. Use file tools only. Do not reply to the user."
+    )
+
+
+class AgentCompactionConfig(BaseModel):
+    """Compaction settings."""
+    enabled: bool = True
+    reserve_tokens_floor: int = 8000
+    keep_last_messages: int = 10
+    memory_flush: AgentCompactionMemoryFlushConfig = Field(
+        default_factory=AgentCompactionMemoryFlushConfig
+    )
 
 
 class ProviderConfig(BaseModel):
@@ -223,6 +248,66 @@ class ToolsConfig(BaseModel):
     restrict_to_workspace: bool = False  # If true, restrict all tool access to workspace directory
 
 
+class MemoryProviderConfig(BaseModel):
+    """Embedding provider configuration for memory search."""
+    model: str = "text-embedding-v3"
+    api_key: str = ""
+    api_base: str | None = None
+    dimensions: int | None = None
+    encoding_format: str | None = None
+    batch_size: int = 8
+    max_input_chars: int | None = 4000
+
+
+class MemoryStoreConfig(BaseModel):
+    """Memory index storage configuration."""
+    path: str = "~/.nanobot/memory/index.sqlite"
+    fts: bool = True
+
+
+class MemoryChunkingConfig(BaseModel):
+    """Memory chunking configuration."""
+    tokens: int = 400
+    overlap: int = 80
+
+
+class MemoryHybridConfig(BaseModel):
+    """Hybrid search configuration."""
+    enabled: bool = True
+    candidate_multiplier: float = 8.0
+    vector_weight: float = 0.7
+    text_weight: float = 0.3
+
+
+class MemoryQueryConfig(BaseModel):
+    """Memory query configuration."""
+    max_results: int = 8
+    min_score: float = 0.2
+    hybrid: MemoryHybridConfig = Field(default_factory=MemoryHybridConfig)
+
+
+class MemorySyncConfig(BaseModel):
+    """Memory sync configuration."""
+    on_start: bool = True
+    on_search: bool = True
+    interval_minutes: int = 10
+    watch: bool = False
+    watch_interval_seconds: int = 5
+    watch_debounce_seconds: int = 5
+
+
+class MemoryConfig(BaseModel):
+    """Memory indexing configuration."""
+    enabled: bool = True
+    sources: list[str] = Field(default_factory=lambda: ["memory", "sessions"])
+    extra_paths: list[str] = Field(default_factory=list)
+    provider: MemoryProviderConfig = Field(default_factory=MemoryProviderConfig)
+    store: MemoryStoreConfig = Field(default_factory=MemoryStoreConfig)
+    chunking: MemoryChunkingConfig = Field(default_factory=MemoryChunkingConfig)
+    query: MemoryQueryConfig = Field(default_factory=MemoryQueryConfig)
+    sync: MemorySyncConfig = Field(default_factory=MemorySyncConfig)
+
+
 class Config(BaseSettings):
     """Root configuration for nanobot."""
     agents: AgentsConfig = Field(default_factory=AgentsConfig)
@@ -230,6 +315,7 @@ class Config(BaseSettings):
     providers: ProvidersConfig = Field(default_factory=ProvidersConfig)
     gateway: GatewayConfig = Field(default_factory=GatewayConfig)
     tools: ToolsConfig = Field(default_factory=ToolsConfig)
+    memory: MemoryConfig = Field(default_factory=MemoryConfig)
     
     @property
     def workspace_path(self) -> Path:

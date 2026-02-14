@@ -19,8 +19,11 @@ from nanobot.agent.tools.message import MessageTool
 from nanobot.agent.tools.spawn import SpawnTool
 from nanobot.agent.tools.cron import CronTool
 from nanobot.agent.memory import MemoryStore
+from nanobot.agent.tools.memory import MemorySearchTool, MemoryGetTool
 from nanobot.agent.subagent import SubagentManager
 from nanobot.session.manager import Session, SessionManager
+from nanobot.memory import MemoryIndexManager
+from nanobot.memory.chunking import approximate_token_count
 
 
 class AgentLoop:
@@ -42,26 +45,36 @@ class AgentLoop:
         workspace: Path,
         model: str | None = None,
         max_iterations: int = 20,
+        context_tokens: int | None = None,
+        compaction_config: "AgentCompactionConfig | None" = None,
         temperature: float = 0.7,
         max_tokens: int = 4096,
         memory_window: int = 50,
         brave_api_key: str | None = None,
+        memory_config: "MemoryConfig | None" = None,
+        openai_api_key: str | None = None,
+        openai_api_base: str | None = None,
         exec_config: "ExecToolConfig | None" = None,
         cron_service: "CronService | None" = None,
         restrict_to_workspace: bool = False,
         session_manager: SessionManager | None = None,
     ):
-        from nanobot.config.schema import ExecToolConfig
+        from nanobot.config.schema import ExecToolConfig, MemoryConfig, AgentCompactionConfig
         from nanobot.cron.service import CronService
         self.bus = bus
         self.provider = provider
         self.workspace = workspace
         self.model = model or provider.get_default_model()
         self.max_iterations = max_iterations
+        self.context_tokens = context_tokens or 128000
+        self.compaction_config = compaction_config or AgentCompactionConfig()
         self.temperature = temperature
         self.max_tokens = max_tokens
         self.memory_window = memory_window
         self.brave_api_key = brave_api_key
+        self.memory_config = memory_config or MemoryConfig()
+        self.openai_api_key = openai_api_key
+        self.openai_api_base = openai_api_base
         self.exec_config = exec_config or ExecToolConfig()
         self.cron_service = cron_service
         self.restrict_to_workspace = restrict_to_workspace
@@ -69,6 +82,17 @@ class AgentLoop:
         self.context = ContextBuilder(workspace)
         self.sessions = session_manager or SessionManager(workspace)
         self.tools = ToolRegistry()
+        self.memory_index: MemoryIndexManager | None = None
+        if self.memory_config.enabled:
+            self.memory_index = MemoryIndexManager(
+                workspace_dir=workspace,
+                config=self.memory_config,
+                api_key=self.openai_api_key,
+                api_base=self.openai_api_base,
+            )
+            if self.memory_config.sync.on_start:
+                self.memory_index.sync(reason="start")
+            self.memory_index.start()
         self.subagents = SubagentManager(
             provider=provider,
             workspace=workspace,
@@ -103,6 +127,11 @@ class AgentLoop:
         # Web tools
         self.tools.register(WebSearchTool(api_key=self.brave_api_key))
         self.tools.register(WebFetchTool())
+
+        # Memory tools
+        if self.memory_index:
+            self.tools.register(MemorySearchTool(self.memory_index))
+            self.tools.register(MemoryGetTool(self.memory_index))
         
         # Message tool
         message_tool = MessageTool(send_callback=self.bus.publish_outbound)
@@ -216,6 +245,8 @@ class AgentLoop:
     def stop(self) -> None:
         """Stop the agent loop."""
         self._running = False
+        if self.memory_index:
+            self.memory_index.stop()
         logger.info("Agent loop stopping")
     
     async def _process_message(self, msg: InboundMessage, session_key: str | None = None) -> OutboundMessage | None:
@@ -263,11 +294,19 @@ class AgentLoop:
         if len(session.messages) > self.memory_window:
             asyncio.create_task(self._consolidate_memory(session))
 
+        await self._maybe_compact(session)
         self._set_tool_context(msg.channel, msg.chat_id)
+        memory_snippets = None
+        if self.memory_index and msg.content:
+            try:
+                memory_snippets = self.memory_index.search(msg.content)
+            except Exception as exc:
+                logger.warning(f"Memory search failed: {exc}")
         initial_messages = self.context.build_messages(
             history=session.get_history(max_messages=self.memory_window),
             current_message=msg.content,
             media=msg.media if msg.media else None,
+            memory_snippets=memory_snippets,
             channel=msg.channel,
             chat_id=msg.chat_id,
         )
@@ -401,6 +440,7 @@ Respond with ONLY valid JSON, no markdown fences."""
 
             if entry := result.get("history_entry"):
                 memory.append_history(entry)
+                memory.append_daily(entry)
             if update := result.get("memory_update"):
                 if update != current_memory:
                     memory.write_long_term(update)
@@ -412,6 +452,78 @@ Respond with ONLY valid JSON, no markdown fences."""
             logger.info(f"Memory consolidation done: {len(session.messages)} messages, last_consolidated={session.last_consolidated}")
         except Exception as e:
             logger.error(f"Memory consolidation failed: {e}")
+
+    async def _maybe_compact(self, session: Session) -> None:
+        if not self.compaction_config.enabled:
+            return
+        total_tokens = 0
+        for m in session.messages[-self.memory_window:]:
+            total_tokens += approximate_token_count(m.get("content", ""))
+        if total_tokens < (self.context_tokens - self.compaction_config.reserve_tokens_floor):
+            return
+        await self._compact_session(session)
+
+    async def _compact_session(self, session: Session) -> None:
+        # Memory flush
+        if self.compaction_config.memory_flush.enabled:
+            await self._flush_memory(session)
+
+        # Summarize and compact messages
+        keep_last = max(0, self.compaction_config.keep_last_messages)
+        recent = session.messages[-keep_last:] if keep_last else []
+        transcript = _format_messages(session.messages)
+        summary = await self._summarize(transcript)
+        session.messages = []
+        if summary:
+            session.add_message("system", f"[Summary] {summary}")
+        for m in recent:
+            session.messages.append(m)
+        session.last_consolidated = len(session.messages)
+        self.sessions.save(session)
+
+    async def _flush_memory(self, session: Session) -> None:
+        memory = MemoryStore(self.workspace)
+        transcript = _format_messages(session.messages)
+        prompt = f"{self.compaction_config.memory_flush.prompt}\n\nTranscript:\n{transcript}\n"
+        try:
+            response = await self.provider.chat(
+                messages=[
+                    {"role": "system", "content": self.compaction_config.memory_flush.system_prompt},
+                    {"role": "user", "content": prompt},
+                ],
+                model=self.model,
+            )
+            text = (response.content or "").strip()
+            if text.startswith("```"):
+                text = text.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+            data = json.loads(text) if text else {}
+            long_term = (data.get("long_term") or "").strip()
+            daily = (data.get("daily") or "").strip()
+            if long_term:
+                memory.write_long_term(long_term)
+            if daily:
+                memory.append_daily(daily)
+        except Exception as exc:
+            logger.warning(f"Memory flush failed: {exc}")
+
+    async def _summarize(self, transcript: str) -> str:
+        prompt = (
+            "Summarize the conversation in 3-6 sentences. "
+            "Focus on decisions, tasks, and user preferences.\n\n"
+            f"{transcript}"
+        )
+        try:
+            response = await self.provider.chat(
+                messages=[
+                    {"role": "system", "content": "You are a concise summarizer."},
+                    {"role": "user", "content": prompt},
+                ],
+                model=self.model,
+            )
+            return (response.content or "").strip()
+        except Exception as exc:
+            logger.warning(f"Summarization failed: {exc}")
+            return ""
 
     async def process_direct(
         self,
@@ -441,3 +553,12 @@ Respond with ONLY valid JSON, no markdown fences."""
         
         response = await self._process_message(msg, session_key=session_key)
         return response.content if response else ""
+
+
+def _format_messages(messages: list[dict[str, Any]]) -> str:
+    lines: list[str] = []
+    for m in messages:
+        role = m.get("role", "unknown").upper()
+        content = m.get("content", "")
+        lines.append(f"{role}: {content}")
+    return "\n".join(lines)

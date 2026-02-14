@@ -98,6 +98,7 @@ You are nanobot, a helpful AI assistant. You have access to tools that allow you
 ## Workspace
 Your workspace is at: {workspace_path}
 - Long-term memory: {workspace_path}/memory/MEMORY.md
+- Daily notes: {workspace_path}/memory/YYYY-MM-DD.md
 - History log: {workspace_path}/memory/HISTORY.md (grep-searchable)
 - Custom skills: {workspace_path}/skills/{{skill-name}}/SKILL.md
 
@@ -107,7 +108,7 @@ For normal conversation, just respond with text - do not call the message tool.
 
 Always be helpful, accurate, and concise. When using tools, think step by step: what you know, what you need, and why you chose this tool.
 When remembering something important, write to {workspace_path}/memory/MEMORY.md
-To recall past events, grep {workspace_path}/memory/HISTORY.md"""
+To recall past events, use memory_search or grep {workspace_path}/memory/HISTORY.md"""
     
     def _load_bootstrap_files(self) -> str:
         """Load all bootstrap files from workspace."""
@@ -127,6 +128,7 @@ To recall past events, grep {workspace_path}/memory/HISTORY.md"""
         current_message: str,
         skill_names: list[str] | None = None,
         media: list[str] | None = None,
+        memory_snippets: list[dict[str, Any]] | None = None,
         channel: str | None = None,
         chat_id: str | None = None,
     ) -> list[dict[str, Any]]:
@@ -152,6 +154,10 @@ To recall past events, grep {workspace_path}/memory/HISTORY.md"""
             system_prompt += f"\n\n## Current Session\nChannel: {channel}\nChat ID: {chat_id}"
         messages.append({"role": "system", "content": system_prompt})
 
+        if memory_snippets:
+            snippet_text = self._format_memory_snippets(memory_snippets)
+            messages.append({"role": "system", "content": snippet_text})
+
         # History
         messages.extend(history)
 
@@ -160,6 +166,18 @@ To recall past events, grep {workspace_path}/memory/HISTORY.md"""
         messages.append({"role": "user", "content": user_content})
 
         return messages
+
+    def _format_memory_snippets(self, snippets: list[dict[str, Any]]) -> str:
+        lines = ["# Retrieved Memory", ""]
+        for item in snippets:
+            path = item.get("path", "")
+            start = item.get("start_line", "?")
+            end = item.get("end_line", "?")
+            text = (item.get("text") or "").strip()
+            if not text:
+                continue
+            lines.append(f"- [{path}:{start}-{end}] {text}")
+        return "\n".join(lines)
 
     def _build_user_content(self, text: str, media: list[str] | None) -> str | list[dict[str, Any]]:
         """Build user message content with optional base64-encoded images."""

@@ -209,7 +209,7 @@ You are a helpful AI assistant. Be concise, accurate, and friendly.
 - Always explain what you're doing before taking actions
 - Ask for clarification when the request is ambiguous
 - Use tools to help accomplish tasks
-- Remember important information in memory/MEMORY.md; past events are logged in memory/HISTORY.md
+- Remember important information in memory/MEMORY.md; daily notes go to memory/YYYY-MM-DD.md; past events are logged in memory/HISTORY.md
 """,
         "SOUL.md": """# Soul
 
@@ -337,11 +337,16 @@ def gateway(
         provider=provider,
         workspace=config.workspace_path,
         model=config.agents.defaults.model,
+        context_tokens=config.agents.defaults.context_tokens,
+        compaction_config=config.agents.defaults.compaction,
         temperature=config.agents.defaults.temperature,
         max_tokens=config.agents.defaults.max_tokens,
         max_iterations=config.agents.defaults.max_tool_iterations,
         memory_window=config.agents.defaults.memory_window,
         brave_api_key=config.tools.web.search.api_key or None,
+        memory_config=config.memory,
+        openai_api_key=config.providers.openai.api_key or None,
+        openai_api_base=config.providers.openai.api_base or None,
         exec_config=config.tools.exec,
         cron_service=cron,
         restrict_to_workspace=config.tools.restrict_to_workspace,
@@ -446,11 +451,16 @@ def agent(
         provider=provider,
         workspace=config.workspace_path,
         model=config.agents.defaults.model,
+        context_tokens=config.agents.defaults.context_tokens,
+        compaction_config=config.agents.defaults.compaction,
         temperature=config.agents.defaults.temperature,
         max_tokens=config.agents.defaults.max_tokens,
         max_iterations=config.agents.defaults.max_tool_iterations,
         memory_window=config.agents.defaults.memory_window,
         brave_api_key=config.tools.web.search.api_key or None,
+        memory_config=config.memory,
+        openai_api_key=config.providers.openai.api_key or None,
+        openai_api_base=config.providers.openai.api_base or None,
         exec_config=config.tools.exec,
         restrict_to_workspace=config.tools.restrict_to_workspace,
     )
