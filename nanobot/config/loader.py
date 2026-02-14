@@ -69,6 +69,14 @@ def _migrate_config(data: dict) -> dict:
     exec_cfg = tools.get("exec", {})
     if "restrictToWorkspace" in exec_cfg and "restrictToWorkspace" not in tools:
         tools["restrictToWorkspace"] = exec_cfg.pop("restrictToWorkspace")
+    # Infer web search provider if missing
+    search = tools.get("web", {}).get("search", {})
+    if search and "provider" not in search:
+        key = search.get("apiKey", "") or ""
+        if isinstance(key, str) and key.startswith("tvly-"):
+            search["provider"] = "tavily"
+        else:
+            search["provider"] = "brave"
     return data
 
 

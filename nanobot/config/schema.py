@@ -227,8 +227,11 @@ class GatewayConfig(BaseModel):
 
 class WebSearchConfig(BaseModel):
     """Web search tool configuration."""
-    api_key: str = ""  # Brave Search API key
+    provider: str = "tavily"  # tavily | brave | auto
+    api_key: str = ""  # Provider API key
+    api_base: str | None = None  # Optional override for provider base URL
     max_results: int = 5
+    options: dict[str, Any] = Field(default_factory=dict)  # Provider-specific options
 
 
 class WebToolsConfig(BaseModel):

@@ -51,6 +51,7 @@ class AgentLoop:
         max_tokens: int = 4096,
         memory_window: int = 50,
         brave_api_key: str | None = None,
+        web_search_config: "WebSearchConfig | None" = None,
         memory_config: "MemoryConfig | None" = None,
         openai_api_key: str | None = None,
         openai_api_base: str | None = None,
@@ -59,7 +60,7 @@ class AgentLoop:
         restrict_to_workspace: bool = False,
         session_manager: SessionManager | None = None,
     ):
-        from nanobot.config.schema import ExecToolConfig, MemoryConfig, AgentCompactionConfig
+        from nanobot.config.schema import ExecToolConfig, MemoryConfig, AgentCompactionConfig, WebSearchConfig
         from nanobot.cron.service import CronService
         self.bus = bus
         self.provider = provider
@@ -72,6 +73,9 @@ class AgentLoop:
         self.max_tokens = max_tokens
         self.memory_window = memory_window
         self.brave_api_key = brave_api_key
+        if web_search_config is None:
+            web_search_config = WebSearchConfig(provider="brave", api_key=brave_api_key or "")
+        self.web_search_config = web_search_config
         self.memory_config = memory_config or MemoryConfig()
         self.openai_api_key = openai_api_key
         self.openai_api_base = openai_api_base
@@ -100,7 +104,7 @@ class AgentLoop:
             model=self.model,
             temperature=self.temperature,
             max_tokens=self.max_tokens,
-            brave_api_key=brave_api_key,
+            web_search_config=self.web_search_config,
             exec_config=self.exec_config,
             restrict_to_workspace=restrict_to_workspace,
         )
@@ -125,7 +129,13 @@ class AgentLoop:
         ))
         
         # Web tools
-        self.tools.register(WebSearchTool(api_key=self.brave_api_key))
+        self.tools.register(WebSearchTool(
+            provider=self.web_search_config.provider,
+            api_key=self.web_search_config.api_key,
+            api_base=self.web_search_config.api_base,
+            options=self.web_search_config.options,
+            max_results=self.web_search_config.max_results,
+        ))
         self.tools.register(WebFetchTool())
 
         # Memory tools
